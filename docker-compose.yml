@@ -1,0 +1,81 @@
+# Full stack for Parts 1-3: API + Postgres (with logical WAL for CDC) + Flink.
+#
+#   docker compose up -d --build                 # start everything
+#   docker compose run --rm flink-job            # submit the Flink job (once)
+#
+# API: http://localhost:8080   Flink UI: http://localhost:8082   Postgres: localhost:5435
+# (override with API_PORT / FLINK_UI_PORT / PG_PORT if those ports are taken)
+name: form-submission
+
+x-flink-config: &flink-config
+  FLINK_PROPERTIES: |
+    jobmanager.rpc.address: jobmanager
+    rest.address: jobmanager
+    taskmanager.numberOfTaskSlots: 2
+    parallelism.default: 1
+    jobmanager.memory.process.size: 1024m
+    taskmanager.memory.process.size: 1536m
+    state.backend.type: hashmap
+    state.checkpoints.dir: file:///opt/flink/checkpoints
+    restart-strategy.type: fixed-delay
+    restart-strategy.fixed-delay.attempts: 1000
+    restart-strategy.fixed-delay.delay: 5s
+
+services:
+  postgres:
+    image: postgres:16
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_connections=200",
+              "-c", "max_replication_slots=4", "-c", "max_wal_senders=4"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: forms
+    ports: ["${PG_PORT:-5435}:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./internal/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./deploy/postgres/02-cdc.sql:/docker-entrypoint-initdb.d/02-cdc.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d forms"]
+      interval: 2s
+      retries: 30
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/forms?sslmode=disable
+      HTTP_ADDR: ":8080"
+      DB_MAX_CONNS: "50"
+    ports: ["${API_PORT:-8080}:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  jobmanager:
+    build: ./flink
+    image: form-submission-flink
+    command: jobmanager
+    environment: *flink-config
+    ports: ["${FLINK_UI_PORT:-8082}:8081"]
+    volumes: [flink-checkpoints:/opt/flink/checkpoints]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  taskmanager:
+    image: form-submission-flink
+    command: taskmanager
+    environment: *flink-config
+    volumes: [flink-checkpoints:/opt/flink/checkpoints]
+    depends_on: [jobmanager]
+
+  # One-shot: submits flink/sql/hourly_counts.sql to the cluster, then exits.
+  flink-job:
+    image: form-submission-flink
+    profiles: ["job"]
+    command: ["bin/sql-client.sh", "-f", "/opt/sql/hourly_counts.sql"]
+    environment: *flink-config
+    volumes: ["./flink/sql:/opt/sql:ro"]
+    depends_on: [jobmanager]
+
+volumes:
+  pgdata:
+  flink-checkpoints:

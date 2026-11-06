@@ -13,7 +13,9 @@ import (
 
 	"form-submission/internal/config"
 	"form-submission/internal/db"
+	"form-submission/internal/stats"
 	"form-submission/internal/submission"
+	"form-submission/internal/web"
 )
 
 func main() {
@@ -48,9 +50,12 @@ func run(log *slog.Logger) error {
 			http.Error(w, "db unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("ok\n"))
 	})
 	submission.NewHandler(submission.NewPostgresStore(pool), log).Register(mux)
+	stats.NewHandler(pool, log).Register(mux)
+	web.Register(mux)
 
 	srv := &http.Server{
 		Addr:              addr,

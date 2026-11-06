@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Form Submission</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --muted:#667085; --line:#d9dde3; --accent:#2f6fed; --ok:#1a7f4b; --err:#c0362c; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width: 760px; margin: 32px auto; padding: 0 16px; display:grid; gap:20px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px; }
+  h1 { font-size:22px; margin:0; } h2 { font-size:17px; margin:0 0 12px; }
+  label { display:block; font-weight:600; margin:12px 0 4px; }
+  input, textarea { width:100%; padding:9px 10px; border:1px solid var(--line); border-radius:7px; font:inherit; }
+  textarea { min-height:90px; resize:vertical; }
+  button { margin-top:14px; padding:9px 16px; border:0; border-radius:7px; background:var(--accent); color:#fff; font:inherit; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.6; cursor:default; }
+  .row { display:flex; gap:8px; align-items:end; } .row > div { flex:1; } .row button { margin:0; }
+  .msg { margin-top:12px; font-weight:600; } .ok { color:var(--ok); } .err { color:var(--err); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; }
+  .muted { color:var(--muted); }
+  .pager { display:flex; gap:8px; align-items:center; margin-top:10px; } .pager button { margin:0; padding:5px 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Form Submission</h1>
+
+  <section>
+    <h2>Submit a form</h2>
+    <form id="submit-form" novalidate>
+      <label for="form_id">Form ID</label>
+      <input id="form_id" name="form_id" value="contact" required>
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" placeholder="you@example.com" required>
+      <label for="name">Name</label>
+      <input id="name" name="name" placeholder="Your name">
+      <label for="message">Message</label>
+      <textarea id="message" name="message" placeholder="Your message"></textarea>
+      <button type="submit">Submit</button>
+      <div id="submit-msg" class="msg"></div>
+    </form>
+  </section>
+
+  <section>
+    <h2>Submissions</h2>
+    <div class="row">
+      <div><label for="list_form_id">Form ID</label><input id="list_form_id" value="contact"></div>
+      <button id="load">Load</button>
+    </div>
+    <div id="list" style="margin-top:14px" class="muted">Loading…</div>
+    <div class="pager" id="pager" hidden>
+      <button id="prev">Prev</button><span id="pageinfo" class="muted"></span><button id="next">Next</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Live hourly counts <span class="muted" style="font-weight:400">(computed by Flink, refreshes every 2s)</span></h2>
+    <div id="counts" class="muted">Loading…</div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let page = 1;
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+$('submit-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector('button'), msg = $('submit-msg');
+  btn.disabled = true; msg.textContent = ''; msg.className = 'msg';
+  const body = {
+    form_id: $('form_id').value,
+    email: $('email').value,
+    idempotency_key: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random(),
+    data: { name: $('name').value, message: $('message').value },
+  };
+  try {
+    const res = await fetch('/submissions', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const json = await res.json().catch(() => ({}));
+    if (res.ok) {
+      msg.textContent = `Submitted (id ${json.id}).`; msg.classList.add('ok');
+      $('name').value = ''; $('message').value = '';
+      $('list_form_id').value = body.form_id; page = 1; loadList();
+    } else {
+      const fields = json.fields ? ' — ' + Object.entries(json.fields).map(([k,v]) => `${k} ${v}`).join(', ') : '';
+      msg.textContent = (json.error || `Error ${res.status}`) + fields; msg.classList.add('err');
+    }
+  } catch (err) {
+    msg.textContent = 'Could not reach the server.'; msg.classList.add('err');
+  } finally { btn.disabled = false; }
+});
+
+async function loadList() {
+  const formId = $('list_form_id').value.trim(), list = $('list');
+  if (!formId) { list.textContent = 'Enter a form ID.'; $('pager').hidden = true; return; }
+  list.textContent = 'Loading…';
+  try {
+    const res = await fetch(`/forms/${encodeURIComponent(formId)}/submissions?page=${page}`);
+    const json = await res.json();
+    if (!res.ok) { list.innerHTML = `<span class="err">${escapeHTML(json.error || res.status)}</span>`; return; }
+    if (!json.data || json.data.length === 0) { list.textContent = 'No submissions yet for this form.'; $('pager').hidden = true; return; }
+    list.innerHTML = '<table><thead><tr><th>ID</th><th>Email</th><th>Data</th><th>Created</th></tr></thead><tbody>' +
+      json.data.map(s => `<tr><td>${s.id}</td><td>${escapeHTML(s.email)}</td><td>${escapeHTML(JSON.stringify(s.data))}</td><td class="muted">${escapeHTML(new Date(s.created_at).toLocaleString())}</td></tr>`).join('') +
+      '</tbody></table>';
+    $('pager').hidden = json.total_pages <= 1;
+    $('pageinfo').textContent = `Page ${json.page} of ${json.total_pages} (${json.total} total)`;
+    $('prev').disabled = json.page <= 1; $('next').disabled = json.page >= json.total_pages;
+  } catch (err) {
+    list.innerHTML = '<span class="err">Could not reach the server.</span>';
+  }
+}
+
+async function loadCounts() {
+  const formId = $('list_form_id').value.trim(), box = $('counts');
+  if (!formId) { box.textContent = 'Enter a form ID above.'; return; }
+  try {
+    const res = await fetch(`/forms/${encodeURIComponent(formId)}/hourly-counts`);
+    const json = await res.json();
+    if (!res.ok) { box.innerHTML = `<span class="err">${escapeHTML(json.error || res.status)}</span>`; return; }
+    if (json.hours.length === 0) { box.textContent = `No counts yet for "${formId}". Is the Flink job running?`; return; }
+    box.innerHTML = `<p style="margin:0 0 8px">Form <b>${escapeHTML(formId)}</b>: <b>${json.total}</b> submissions in total</p>` +
+      '<table><thead><tr><th>Hour (your local time)</th><th>Submissions</th></tr></thead><tbody>' +
+      json.hours.map(h => `<tr><td>${escapeHTML(new Date(h.hour_start).toLocaleString([], {dateStyle:'medium', timeStyle:'short'}))}</td><td>${h.count}</td></tr>`).join('') +
+      '</tbody></table>';
+  } catch (err) {
+    box.innerHTML = '<span class="err">Could not reach the server.</span>';
+  }
+}
+setInterval(loadCounts, 2000);
+loadCounts();
+
+$('load').addEventListener('click', () => { page = 1; loadList(); loadCounts(); });
+$('prev').addEventListener('click', () => { page--; loadList(); });
+$('next').addEventListener('click', () => { page++; loadList(); });
+loadList();
+</script>
+</body>
+</html>

@@ -1,7 +1,8 @@
 # Demonstrates Part 1 end to end against the running API.
-# Usage: powershell -File scripts\smoke-test.ps1
+# Usage: powershell -File scripts\smoke-test.ps1 [-Base http://localhost:8080]
+param([string]$Base = "http://localhost:8080")
 $ErrorActionPreference = "Stop"
-$base = "http://localhost:8080"
+$base = $Base
 $tmp = New-TemporaryFile
 
 function Call($label, $method, $path, $body) {

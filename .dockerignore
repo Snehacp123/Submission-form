@@ -1,0 +1,7 @@
+.git
+.env
+*.exe
+flink
+deploy
+postman
+scripts
